@@ -102,6 +102,15 @@ export default defineWebSocketHandler({
         })
 
         sessions.set(peer.id, state)
+
+        // Connect Deepgram (async, v5 API)
+        try {
+          await state.deepgramStream.connect()
+        } catch (err: any) {
+          console.error('[deepgram] Connection failed:', err)
+          safeSend(peer, state, { type: 'error', message: 'STT connection failed' })
+        }
+
         safeSend(peer, state, { type: 'ready' })
         break
       }
