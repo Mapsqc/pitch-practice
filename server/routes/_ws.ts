@@ -10,6 +10,7 @@ interface SessionState {
   isProcessing: boolean
   closed: boolean
   transcript: Array<{ role: 'user' | 'assistant'; text: string }>
+  pendingTranscript: string
 }
 
 const sessions = new Map<string, SessionState>()
@@ -72,6 +73,7 @@ export default defineWebSocketHandler({
           isProcessing: false,
           closed: false,
           transcript: [],
+          pendingTranscript: '',
         }
 
         // Setup Deepgram STT
@@ -79,15 +81,14 @@ export default defineWebSocketHandler({
 
         state.deepgramStream.onTranscript((text, isFinal) => {
           if (isFinal && text.trim()) {
-            // Final transcript segment — send for display
+            state.pendingTranscript += ' ' + text.trim()
             safeSend(peer, state, {
               type: 'transcript_interim',
               role: 'user',
-              text: text.trim(),
+              text: state.pendingTranscript.trim(),
               isFinal: true,
             })
           } else if (!isFinal && text.trim()) {
-            // Send interim for display
             safeSend(peer, state, {
               type: 'transcript_interim',
               role: 'user',
@@ -128,7 +129,11 @@ export default defineWebSocketHandler({
         const state = sessions.get(peer.id)
         if (!state || state.isProcessing) break
 
-        const userText = data.transcript?.trim()
+        // Wait a bit for Deepgram to finish processing
+        await new Promise(r => setTimeout(r, 500))
+
+        const userText = state.pendingTranscript.trim()
+        state.pendingTranscript = ''
         if (!userText) break
 
         state.isProcessing = true
