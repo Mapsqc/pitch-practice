@@ -21,29 +21,25 @@ export function useDb(): Database.Database {
         client_type TEXT NOT NULL,
         transcript TEXT DEFAULT '[]',
         feedback TEXT DEFAULT '',
+        feedback_json TEXT,
+        score_global INTEGER,
         duration_seconds INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
-      CREATE TABLE IF NOT EXISTS skills (
+      CREATE TABLE IF NOT EXISTS session_scores (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        description TEXT DEFAULT '',
-        category TEXT DEFAULT ''
-      );
-
-      CREATE TABLE IF NOT EXISTS skill_scores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        skill_id INTEGER NOT NULL,
         session_id INTEGER NOT NULL,
-        score REAL NOT NULL,
-        notes TEXT DEFAULT '',
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (skill_id) REFERENCES skills(id),
+        competence TEXT NOT NULL,
+        score INTEGER,
+        commentaire TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
     `)
+
+    // Migration: add columns if they don't exist (for existing DBs)
+    try { db.exec('ALTER TABLE sessions ADD COLUMN feedback_json TEXT') } catch {}
+    try { db.exec('ALTER TABLE sessions ADD COLUMN score_global INTEGER') } catch {}
   }
 
   return db
