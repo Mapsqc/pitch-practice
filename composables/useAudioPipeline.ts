@@ -142,7 +142,10 @@ export function useAudioPipeline() {
 
     while (playbackQueue.length > 0) {
       const chunk = playbackQueue.shift()!
-      const int16 = new Int16Array(chunk)
+      // Ensure byte length is a multiple of 2 for Int16Array
+      const validLength = chunk.byteLength - (chunk.byteLength % 2)
+      if (validLength === 0) continue
+      const int16 = new Int16Array(chunk, 0, validLength / 2)
       const float32 = new Float32Array(int16.length)
       for (let i = 0; i < int16.length; i++) {
         float32[i] = int16[i] / 32768
