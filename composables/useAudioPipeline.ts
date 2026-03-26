@@ -56,11 +56,8 @@ export function useAudioPipeline() {
       // Start VAD with explicit asset paths (WASM + ONNX served from /vad/)
       const { MicVAD } = await import('@ricky0123/vad-web')
       myvad = await MicVAD.new({
-        modelURL: '/vad/silero_vad_v5.onnx',
-        workletURL: '/vad/vad.worklet.bundle.min.js',
-        ortConfig: (ort: any) => {
-          ort.env.wasm.wasmPaths = '/vad/'
-        },
+        baseAssetPath: '/vad/',
+        onnxWASMBasePath: '/vad/',
         positiveSpeechThreshold: 0.6,
         negativeSpeechThreshold: 0.3,
         minSpeechFrames: 3,
