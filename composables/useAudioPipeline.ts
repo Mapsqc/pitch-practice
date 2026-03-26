@@ -26,34 +26,24 @@ export function useAudioPipeline() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       ws = new WebSocket(`${protocol}//${window.location.host}/_ws`)
 
+      // Wait for open + ready
       await new Promise<void>((resolve, reject) => {
         ws!.onopen = () => {
           ws!.send(JSON.stringify({ type: 'start', clientType }))
-          resolve()
         }
-        ws!.onerror = reject
-        setTimeout(() => reject(new Error('WebSocket timeout')), 5000)
-      })
-
-      // Setup message handling
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data)
-        handleMessage(data)
-      }
-
-      // Wait for 'ready' from server
-      await new Promise<void>((resolve) => {
-        const originalHandler = ws!.onmessage
         ws!.onmessage = (event) => {
           const data = JSON.parse(event.data)
           if (data.type === 'ready') {
-            ws!.onmessage = originalHandler
+            // Switch to normal message handler
+            ws!.onmessage = (e) => handleMessage(JSON.parse(e.data))
             resolve()
           }
         }
+        ws!.onerror = () => reject(new Error('WebSocket connection failed'))
+        setTimeout(() => reject(new Error('WebSocket timeout')), 10000)
       })
 
-      // Start VAD with explicit asset paths (WASM + ONNX served from /vad/)
+      // Start VAD
       const { MicVAD } = await import('@ricky0123/vad-web')
       myvad = await MicVAD.new({
         baseAssetPath: '/vad/',
@@ -65,19 +55,14 @@ export function useAudioPipeline() {
         redemptionFrames: 20,
         onSpeechEnd: (audio: Float32Array) => {
           if (!ws || ws.readyState !== WebSocket.OPEN) return
+          isProcessing.value = true
 
-          // Convert Float32 to Int16 PCM
+          // Convert Float32 to Int16 PCM and send with speech_end
           const pcm16 = float32ToInt16(audio)
           const base64 = bufferToBase64(pcm16.buffer)
 
-          // Send audio to server for STT
-          ws.send(JSON.stringify({ type: 'audio', audio: base64 }))
-
-          // Tell the server "speech ended" so it processes
-          ws.send(JSON.stringify({ type: 'speech_end', transcript: '' }))
-        },
-        onFrameProcessed: (probs: { isSpeech: number }) => {
-          // Could visualize speech probability
+          // Send audio directly — server does STT + LLM + TTS
+          ws.send(JSON.stringify({ type: 'speech_end', audio: base64 }))
         },
       })
 
@@ -105,11 +90,7 @@ export function useAudioPipeline() {
         break
 
       case 'audio':
-        playAudioChunk(data.audio)
-        break
-
-      case 'audio_end':
-        // TTS finished for this turn
+        playFullAudio(data.audio)
         break
 
       case 'turn_done':
@@ -124,54 +105,29 @@ export function useAudioPipeline() {
     }
   }
 
-  // Audio playback for TTS chunks
-  let playbackQueue: ArrayBuffer[] = []
-  let isPlaying = false
-
-  function playAudioChunk(base64Audio: string) {
-    const bytes = base64ToBuffer(base64Audio)
-    playbackQueue.push(bytes)
-    if (!isPlaying) processPlaybackQueue()
-  }
-
-  async function processPlaybackQueue() {
+  // Play complete audio buffer at once (no chunk gaps)
+  async function playFullAudio(base64Audio: string) {
     if (!audioContext) {
       audioContext = new AudioContext({ sampleRate: 24000 })
     }
-    isPlaying = true
 
-    while (playbackQueue.length > 0) {
-      const chunk = playbackQueue.shift()!
-      // Ensure byte length is a multiple of 2 for Int16Array
-      const validLength = chunk.byteLength - (chunk.byteLength % 2)
-      if (validLength === 0) continue
-      const int16 = new Int16Array(chunk, 0, validLength / 2)
-      const float32 = new Float32Array(int16.length)
-      for (let i = 0; i < int16.length; i++) {
-        float32[i] = int16[i] / 32768
-      }
+    const raw = base64ToBuffer(base64Audio)
+    const validLength = raw.byteLength - (raw.byteLength % 2)
+    if (validLength === 0) return
 
-      const buffer = audioContext.createBuffer(1, float32.length, 24000)
-      buffer.getChannelData(0).set(float32)
-
-      const source = audioContext.createBufferSource()
-      source.buffer = buffer
-      source.connect(audioContext.destination)
-      source.start()
-
-      // Wait for it to finish
-      await new Promise<void>((resolve) => {
-        source.onended = () => resolve()
-      })
+    const int16 = new Int16Array(raw, 0, validLength / 2)
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768
     }
 
-    isPlaying = false
-  }
+    const buffer = audioContext.createBuffer(1, float32.length, 24000)
+    buffer.getChannelData(0).set(float32)
 
-  // Expose a method to get audio data for avatar lip-sync
-  function getAudioFeedCallback(): ((data: Float32Array) => void) | null {
-    // This will be set by the component using this composable
-    return null
+    const source = audioContext.createBufferSource()
+    source.buffer = buffer
+    source.connect(audioContext.destination)
+    source.start()
   }
 
   function stop(): Array<{ role: string; text: string }> {
@@ -194,8 +150,6 @@ export function useAudioPipeline() {
       audioContext = null
     }
 
-    playbackQueue = []
-    isPlaying = false
     isConnected.value = false
     currentAssistantText.value = ''
 

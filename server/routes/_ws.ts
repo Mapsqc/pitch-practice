@@ -1,4 +1,4 @@
-import { createDeepgramStream } from '../utils/deepgram'
+import { transcribeAudio } from '../utils/stt'
 import { streamChatResponse, type ChatMessage } from '../utils/llm'
 import { streamTTS } from '../utils/tts'
 import { buildClientPrompt } from '../utils/prompts'
@@ -6,31 +6,24 @@ import { buildClientPrompt } from '../utils/prompts'
 interface SessionState {
   clientType: string
   messages: ChatMessage[]
-  deepgramStream: ReturnType<typeof createDeepgramStream> | null
   isProcessing: boolean
   closed: boolean
   transcript: Array<{ role: 'user' | 'assistant'; text: string }>
-  pendingTranscript: string
 }
 
 const sessions = new Map<string, SessionState>()
 
-/** Safely send a message to a peer, ignoring errors if connection is closed */
 function safeSend(peer: any, state: SessionState | undefined, payload: object): void {
   if (state?.closed) return
   try {
     peer.send(JSON.stringify(payload))
-  } catch (e) {
-    // Connection may have closed between check and send — ignore
-  }
+  } catch {}
 }
 
-/** Clean up a session's resources and remove from the Map */
 function cleanupSession(peerId: string): void {
   const state = sessions.get(peerId)
   if (state) {
     state.closed = true
-    state.deepgramStream?.close()
     sessions.delete(peerId)
   }
 }
@@ -47,131 +40,97 @@ export default defineWebSocketHandler({
     try {
       const raw = typeof msg === 'string' ? msg : msg.text()
       data = JSON.parse(raw)
-    } catch (e) {
-      console.error('[ws] Failed to parse message:', e)
-      safeSend(peer, undefined, { type: 'error', message: 'Invalid JSON message' })
+    } catch {
       return
     }
 
     switch (data.type) {
       case 'start': {
-        // Clean up any existing session for this peer (prevents orphaned Deepgram streams)
         cleanupSession(peer.id)
 
         const clientType = data.clientType as string
-        if (!clientType) {
-          safeSend(peer, undefined, { type: 'error', message: 'Missing clientType' })
-          return
-        }
+        if (!clientType) return
 
         const systemPrompt = buildClientPrompt(clientType as any)
 
-        const state: SessionState = {
+        sessions.set(peer.id, {
           clientType,
           messages: [{ role: 'system', content: systemPrompt }],
-          deepgramStream: null,
           isProcessing: false,
           closed: false,
           transcript: [],
-          pendingTranscript: '',
-        }
-
-        // Setup Deepgram STT
-        state.deepgramStream = createDeepgramStream(config.deepgramApiKey)
-
-        state.deepgramStream.onTranscript((text, isFinal) => {
-          if (isFinal && text.trim()) {
-            state.pendingTranscript += ' ' + text.trim()
-            safeSend(peer, state, {
-              type: 'transcript_interim',
-              role: 'user',
-              text: state.pendingTranscript.trim(),
-              isFinal: true,
-            })
-          } else if (!isFinal && text.trim()) {
-            safeSend(peer, state, {
-              type: 'transcript_interim',
-              role: 'user',
-              text: text.trim(),
-            })
-          }
         })
 
-        state.deepgramStream.onError((error) => {
-          console.error('[deepgram] Error:', error)
-          safeSend(peer, state, { type: 'error', message: 'STT error: ' + error.message })
-        })
-
-        sessions.set(peer.id, state)
-
-        // Connect Deepgram (async, v5 API)
-        try {
-          await state.deepgramStream.connect()
-        } catch (err: any) {
-          console.error('[deepgram] Connection failed:', err)
-          safeSend(peer, state, { type: 'error', message: 'STT connection failed' })
-        }
-
-        safeSend(peer, state, { type: 'ready' })
-        break
-      }
-
-      case 'audio': {
-        const state = sessions.get(peer.id)
-        if (!state?.deepgramStream) break
-        const audioBuffer = Buffer.from(data.audio, 'base64')
-        state.deepgramStream.send(audioBuffer)
+        safeSend(peer, sessions.get(peer.id), { type: 'ready' })
         break
       }
 
       case 'speech_end': {
-        // VAD detected end of speech — process the utterance
         const state = sessions.get(peer.id)
         if (!state || state.isProcessing) break
-
-        // Wait a bit for Deepgram to finish processing
-        await new Promise(r => setTimeout(r, 500))
-
-        const userText = state.pendingTranscript.trim()
-        state.pendingTranscript = ''
-        if (!userText) break
+        if (!data.audio) break
 
         state.isProcessing = true
-        state.transcript.push({ role: 'user', text: userText })
-        state.messages.push({ role: 'user', content: userText })
-
-        safeSend(peer, state, {
-          type: 'transcript',
-          role: 'user',
-          text: userText,
-        })
-
-        // LLM streaming -> collect full response -> TTS
-        // We collect the full response first, then send TTS after streamChatResponse resolves.
-        // This avoids the issue of onDone being async but not awaited by the LLM wrapper.
-        let fullResponse = ''
 
         try {
+          // 1. STT with Whisper (batch — simple and accurate)
+          const pcmBuffer = Buffer.from(data.audio, 'base64')
+          const userText = await transcribeAudio(config.openaiApiKey, pcmBuffer)
+
+          if (!userText) {
+            state.isProcessing = false
+            break
+          }
+
+          state.transcript.push({ role: 'user', text: userText })
+          state.messages.push({ role: 'user', content: userText })
+          safeSend(peer, state, { type: 'transcript', role: 'user', text: userText })
+
+          // 2. LLM response (streaming for live text display)
+          let fullResponse = ''
+
           await streamChatResponse(config.openaiApiKey, state.messages, {
             onToken(token) {
               fullResponse += token
-              // Send token for live text display
               safeSend(peer, state, { type: 'llm_token', text: token })
             },
-            onDone(_fullText) {
-              // No-op: we handle post-processing after await resolves
-            },
+            onDone() {},
             onError(error) {
               console.error('[llm] Error:', error)
               safeSend(peer, state, { type: 'error', message: error.message })
             },
           })
 
-          // After LLM stream completes, send TTS for the full response
-          if (state.closed) break
+          if (state.closed || !fullResponse.trim()) {
+            state.isProcessing = false
+            break
+          }
 
-          if (fullResponse.trim()) {
-            await sendTTS(config.openaiApiKey, fullResponse.trim(), peer, state)
+          // 3. TTS — collect ALL audio chunks, then send at once
+          const audioChunks: Buffer[] = []
+
+          await new Promise<void>((resolve) => {
+            streamTTS(config.openaiApiKey, fullResponse.trim(), {
+              onAudioChunk(chunk) {
+                audioChunks.push(chunk)
+              },
+              onDone() {
+                resolve()
+              },
+              onError(error) {
+                console.error('[tts] Error:', error)
+                resolve()
+              },
+            })
+          })
+
+          // Send complete audio as single chunk to avoid playback gaps
+          if (audioChunks.length > 0) {
+            const fullAudio = Buffer.concat(audioChunks)
+            safeSend(peer, state, {
+              type: 'audio',
+              audio: fullAudio.toString('base64'),
+            })
           }
 
           state.messages.push({ role: 'assistant', content: fullResponse })
@@ -203,43 +162,14 @@ export default defineWebSocketHandler({
         }
         break
       }
-
-      default: {
-        console.warn('[ws] Unknown message type:', data.type)
-        break
-      }
     }
   },
 
   close(peer) {
     cleanupSession(peer.id)
-    console.log('[ws] Client disconnected:', peer.id)
   },
 
-  error(peer, error) {
-    console.error('[ws] WebSocket error for peer', peer.id, ':', error)
+  error(peer) {
     cleanupSession(peer.id)
   },
 })
-
-async function sendTTS(apiKey: string, text: string, peer: any, state: SessionState): Promise<void> {
-  if (state.closed) return
-  return new Promise((resolve) => {
-    streamTTS(apiKey, text, {
-      onAudioChunk(chunk) {
-        safeSend(peer, state, {
-          type: 'audio',
-          audio: chunk.toString('base64'),
-        })
-      },
-      onDone() {
-        safeSend(peer, state, { type: 'audio_end' })
-        resolve()
-      },
-      onError(error) {
-        console.error('[tts] Error:', error)
-        resolve() // Resolve even on error to avoid hanging
-      },
-    })
-  })
-}

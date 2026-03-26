@@ -15,7 +15,7 @@ export async function streamTTS(
 
   try {
     const response = await openai.audio.speech.create({
-      model: 'tts-1',
+      model: 'tts-1-hd',
       input: text,
       voice: 'ash',
       response_format: 'pcm',
