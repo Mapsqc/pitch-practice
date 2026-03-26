@@ -8,10 +8,13 @@
     "preview": "nuxt preview"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.0.0",
     "@met4citizen/talkinghead": "github:met4citizen/talkinghead",
     "@nuxtjs/supabase": "^2.0.4",
+    "@ricky0123/vad-web": "^0.0.30",
     "better-sqlite3": "^12.8.0",
     "nuxt": "^3.17.0",
+    "openai": "^6.33.0",
     "three": "^0.183.2",
     "vue": "^3.5.0"
   }

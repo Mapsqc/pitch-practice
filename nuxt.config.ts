@@ -3,6 +3,7 @@ export default defineNuxtConfig({
   modules: ['@nuxtjs/supabase'],
   runtimeConfig: {
     openaiApiKey: '',
+    deepgramApiKey: '',
   },
   supabase: {
     redirectOptions: {
@@ -14,6 +15,11 @@ export default defineNuxtConfig({
   vite: {
     optimizeDeps: {
       exclude: ['@met4citizen/talkinghead'],
+    },
+  },
+  nitro: {
+    experimental: {
+      websocket: true,
     },
   },
 })
