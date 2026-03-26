@@ -48,11 +48,11 @@ export function useAudioPipeline() {
       myvad = await MicVAD.new({
         baseAssetPath: '/vad/',
         onnxWASMBasePath: '/vad/',
-        positiveSpeechThreshold: 0.6,
-        negativeSpeechThreshold: 0.3,
-        minSpeechFrames: 3,
-        preSpeechPadFrames: 10,
-        redemptionFrames: 20,
+        positiveSpeechThreshold: 0.5,
+        negativeSpeechThreshold: 0.2,
+        minSpeechFrames: 5,
+        preSpeechPadFrames: 15,
+        redemptionFrames: 30,
         onSpeechEnd: (audio: Float32Array) => {
           if (!ws || ws.readyState !== WebSocket.OPEN) return
           isProcessing.value = true

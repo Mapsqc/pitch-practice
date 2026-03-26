@@ -13,6 +13,7 @@ export async function transcribeAudio(apiKey: string, pcmBuffer: Buffer): Promis
     file,
     language: 'fr',
     response_format: 'text',
+    prompt: 'Conversation en français québécois. Vente porte-à-porte contrôle antiparasitaire. Insectes, fourmis, araignées, guêpes, moustiques, rongeurs. Insight Pest Solutions. Moitié prix, traitement, application liquide, granulation.',
   })
 
   return (response as unknown as string).trim()
